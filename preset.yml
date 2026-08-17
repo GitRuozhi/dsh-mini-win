@@ -1,2 +1,2 @@
 name: 小赢模式
-description: 适合 Windows 开发环境的极简模式，仅提供 str_replace_editor 、pwsh 以及 CMD 三个工具。
+description: 适合 Windows 开发环境的极简模式，仅提供 str_replace_editor 、pwsh 以及持久 Bash 三个工具。为引出高级思维链保留了持久 Bash 工具。

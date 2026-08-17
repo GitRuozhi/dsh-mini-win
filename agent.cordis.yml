@@ -1,15 +1,12 @@
-# The `mini-win` agent preset: a Windows-friendly minimal coding-agent composition,
-# derived from `minimal`. The original `minimal` mounts a persistent bash shell
-# over the PTY backend, which is Linux/macOS-only and therefore unusable on this
-# Windows host. This copy swaps the shell for the sandboxed one-shot PowerShell
-# tool (`dsh-tool-pwsh`) plus an UNSANDBOXED native cmd.exe tool
-# (`./cmd-tool.js`) spawned directly through `ctx.subprocess`. Everything else
-# stays minimal.
+# The `minimal-pwsh` agent preset: a fixed-prompt, three-tool coding-agent
+# composition — persistent `bash`, Windows PowerShell (`pwsh`), and
+# `str_replace_editor` — with the dsh-github-mcp tool family masked out.
 #
 # The persona is the complete system prompt, so global identity, Web orientation,
 # tool guidance, and later assembly listeners cannot add prompt text. Runtime
 # context snapshots are suppressed for this preset, and the model composes only
-# `pwsh`, `cmd`, and `str_replace_editor`. Context compaction is absent.
+# persistent `bash`, `pwsh`, and `str_replace_editor`. Context compaction is
+# absent.
 
 - id: persona
   name: '@deepseek-ai/dsh-persona'
@@ -18,21 +15,43 @@
     complete: true
     includeRuntimeContext: false
 
-# One-shot PowerShell execution, mirroring the `standard` preset's Windows
-# shell. The executor (`pwsh-sandbox`/`pwsh-local`) and the `shell-env`
-# registry are host-plane (provided by the `dsh-base` bundle), so this row
-# only registers the model-facing tool.
+# The PTY registry is an agent-owned service, so it lives in an entry-local
+# realm. The backend still consumes the host sandbox policy and subprocess
+# implementation, while the tool registers into this agent's scoped catalog.
+- id: persistent-shell
+  name: cordis:group
+  group: true
+  isolate:
+    terminals: true
+  config:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        timeoutMs: 300000
+
+    - id: persistent-bash
+      name: '@deepseek-ai/dsh-tool-bash-persistent'
+      config:
+        timeoutMs: 300000
+        description: |-
+          Run commands in a bash shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * You do have access to a mirror of common linux and python packages via apt and pip.
+          * State is persistent across command calls and discussions with the user.
+          * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+          * Please avoid commands that may produce a very large amount of output.
+          * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+
+# The Windows PowerShell tool. Its executor (`pwsh-sandbox`) is host-plane;
+# this row registers only the model-facing tool into this agent's scoped
+# catalog, and it is disabled on non-Windows platforms (same guard as the
+# `standard` and `code` presets).
 - id: tool-pwsh
   name: '@deepseek-ai/dsh-tool-pwsh'
-  disabled: !!js process.platform !== 'win32'
-
-# Native Windows Command Prompt execution (cmd.exe) spawned directly through
-# `ctx.subprocess` — deliberately UNSANDBOXED (it does not route through the
-# host shell seam, so no file sandbox applies). The plugin is a preset-local
-# file; its tool description instructs the agent to ask the user before
-# calling, and to fall back to the sandboxed `pwsh` tool otherwise.
-- id: tool-cmd
-  name: ./cmd-tool.js
   disabled: !!js process.platform !== 'win32'
 
 # The bare local filesystem shadows the host's sandboxed provider only for this
@@ -53,7 +72,63 @@
       config:
         maxOutputChars: 16000
 
-# Mask the GitHub tools that the dsh-github-mcp bundle registers globally, so
-# this minimal preset stays minimal (keeps pwsh / cmd / str_replace_editor only).
-- id: restrict-github
-  name: ./restrict-github.js
+# Mask the dsh-github-mcp tools. The web profile's HOST composition registers
+# `mcp__github__*` (MCP bridge) and `github_file_read` (REST reader) into the
+# global `tools` registry, so every agent inherits them. A preset cannot
+# unregister host rows; instead this row restricts those inherited names for
+# this preset's scope only, hiding them from agents composed here. The row
+# consumes the host `tools` registry and provides nothing, so it needs no
+# realm.
+#
+# The deny list is the exact current tool set of dsh-github-mcp. If that
+# plugin's MCP server adds or renames tools, extend the list to keep them
+# masked.
+- id: tool-deny-github
+  name: ./block-github.mjs
+  config:
+    deny:
+      - github_file_read
+      - mcp__github__add_comment_to_pending_review
+      - mcp__github__add_issue_comment
+      - mcp__github__add_reply_to_pull_request_comment
+      - mcp__github__create_branch
+      - mcp__github__create_or_update_file
+      - mcp__github__create_pull_request
+      - mcp__github__create_repository
+      - mcp__github__delete_file
+      - mcp__github__fork_repository
+      - mcp__github__get_commit
+      - mcp__github__get_file_contents
+      - mcp__github__get_label
+      - mcp__github__get_latest_release
+      - mcp__github__get_me
+      - mcp__github__get_release_by_tag
+      - mcp__github__get_tag
+      - mcp__github__get_team_members
+      - mcp__github__get_teams
+      - mcp__github__issue_read
+      - mcp__github__issue_write
+      - mcp__github__list_branches
+      - mcp__github__list_commits
+      - mcp__github__list_issue_fields
+      - mcp__github__list_issue_types
+      - mcp__github__list_issues
+      - mcp__github__list_pull_requests
+      - mcp__github__list_releases
+      - mcp__github__list_repository_collaborators
+      - mcp__github__list_tags
+      - mcp__github__merge_pull_request
+      - mcp__github__pull_request_read
+      - mcp__github__pull_request_review_write
+      - mcp__github__push_files
+      - mcp__github__request_copilot_review
+      - mcp__github__run_secret_scanning
+      - mcp__github__search_code
+      - mcp__github__search_commits
+      - mcp__github__search_issues
+      - mcp__github__search_pull_requests
+      - mcp__github__search_repositories
+      - mcp__github__search_users
+      - mcp__github__sub_issue_write
+      - mcp__github__update_pull_request
+      - mcp__github__update_pull_request_branch
