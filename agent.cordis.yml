@@ -1,134 +1,90 @@
-# The `minimal-pwsh` agent preset: a fixed-prompt, three-tool coding-agent
-# composition — persistent `bash`, Windows PowerShell (`pwsh`), and
-# `str_replace_editor` — with the dsh-github-mcp tool family masked out.
+# The `mini-win` agent preset: official `minimal`, with both persistent
+# shells mounted (Git Bash + PowerShell 7) and the dsh-github-mcp tool
+# family masked out.
 #
-# The persona is the complete system prompt, so global identity, Web orientation,
-# tool guidance, and later assembly listeners cannot add prompt text. Runtime
-# context snapshots are suppressed for this preset, and the model composes only
-# persistent `bash`, `pwsh`, and `str_replace_editor`. Context compaction is
-# absent.
+# Official `minimal` mounts exactly one shell stack (`bash` on POSIX, `pwsh`
+# on win32) under a shared PTY backend type `shell`. This preset keeps the
+# same persona / no-compaction / no-runtime-context contract, then mounts
+# two isolated shell stacks so both tools can coexist.
+#
+# Git Bash (MSYS) cannot start under the Windows ACL restricted-token runner,
+# so the bash stack isolates `sandbox` and uses a passthrough confine. The
+# pwsh stack keeps the host ACL sandbox.
 
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: You are a helpful software engineer assistant.
+    prefix: You are a helpful software engineer assistant.
     complete: true
     includeRuntimeContext: false
 
-# The PTY registry is an agent-owned service, so it lives in an entry-local
-# realm. The backend still consumes the host sandbox policy and subprocess
-# implementation, while the tool registers into this agent's scoped catalog.
-- id: persistent-shell
+- id: persistent-bash-stack
   name: cordis:group
   group: true
   isolate:
     terminals: true
+    sandbox: true
   config:
-    - id: pty
+    - id: pty-bash
       name: '@deepseek-ai/dsh-terminal'
+
+    - id: bash-sandbox-passthrough
+      name: ./pty-unconfined-sandbox.mjs
 
     - id: terminal-bash
       name: '@deepseek-ai/dsh-terminal-bash'
       config:
+        backendType: bash
+        shellDialect: bash
         timeoutMs: 300000
+        shellPath: !!js (process.platform !== "win32" && "/bin/bash") || process.env.DSH_BASH_PATH || (process.env.ProgramFiles + "\\Git\\bin\\bash.exe")
 
     - id: persistent-bash
       name: '@deepseek-ai/dsh-tool-bash-persistent'
       config:
+        backendType: bash
         timeoutMs: 300000
         description: |-
           Run commands in a bash shell
           * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
-          * You don't have access to the internet via this tool.
-          * You do have access to a mirror of common linux and python packages via apt and pip.
+          * Network access depends on the task environment. Prefer configured mirrors/proxies when they are available.
           * State is persistent across command calls and discussions with the user.
           * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
           * Please avoid commands that may produce a very large amount of output.
           * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
 
-# The Windows PowerShell tool. Its executor (`pwsh-sandbox`) is host-plane;
-# this row registers only the model-facing tool into this agent's scoped
-# catalog, and it is disabled on non-Windows platforms (same guard as the
-# `standard` and `code` presets).
-- id: tool-pwsh
-  name: '@deepseek-ai/dsh-tool-pwsh'
-  disabled: !!js process.platform !== 'win32'
-
-# The bare local filesystem shadows the host's sandboxed provider only for this
-# preset. The editor shares that realm and requires absolute paths.
-- id: filesystem
+- id: persistent-pwsh-stack
   name: cordis:group
   group: true
   isolate:
-    fs: true
+    terminals: true
   config:
-    - id: fs-local
-      name: '@deepseek-ai/dsh-fs-local'
-      config:
-        cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    - id: pty-pwsh
+      name: '@deepseek-ai/dsh-terminal'
 
-    - id: str-replace-editor
-      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+    - id: terminal-pwsh
+      name: '@deepseek-ai/dsh-terminal-bash'
       config:
-        maxOutputChars: 16000
+        backendType: pwsh
+        shellDialect: pwsh
+        timeoutMs: 300000
+        shellPath: !!js process.env.DSH_PWSH_PATH || "pwsh"
 
-# Mask the dsh-github-mcp tools. The web profile's HOST composition registers
-# `mcp__github__*` (MCP bridge) and `github_file_read` (REST reader) into the
-# global `tools` registry, so every agent inherits them. A preset cannot
-# unregister host rows; instead this row restricts those inherited names for
-# this preset's scope only, hiding them from agents composed here. The row
-# consumes the host `tools` registry and provides nothing, so it needs no
-# realm.
-#
-# The deny list is the exact current tool set of dsh-github-mcp. If that
-# plugin's MCP server adds or renames tools, extend the list to keep them
-# masked.
+    - id: persistent-pwsh
+      name: '@deepseek-ai/dsh-tool-pwsh-persistent'
+      config:
+        backendType: pwsh
+        timeoutMs: 300000
+        description: |-
+          Run commands in a PowerShell 7 (pwsh) shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * State is persistent across command calls and discussions with the user.
+          * Use native Windows paths (C:\...) and $env:NAME variables; this is PowerShell 7, not bash and not Windows PowerShell 5.1.
+          * Please avoid commands that may produce a very large amount of output.
+          * Please run long lived commands in the background, e.g. 'Start-Job' or start a server with Start-Process.
+
+# Mask GitHub tools inherited from the host (dsh-github-mcp). A preset cannot
+# unregister host rows; this row hides them for this preset's scope only.
 - id: tool-deny-github
   name: ./block-github.mjs
-  config:
-    deny:
-      - github_file_read
-      - mcp__github__add_comment_to_pending_review
-      - mcp__github__add_issue_comment
-      - mcp__github__add_reply_to_pull_request_comment
-      - mcp__github__create_branch
-      - mcp__github__create_or_update_file
-      - mcp__github__create_pull_request
-      - mcp__github__create_repository
-      - mcp__github__delete_file
-      - mcp__github__fork_repository
-      - mcp__github__get_commit
-      - mcp__github__get_file_contents
-      - mcp__github__get_label
-      - mcp__github__get_latest_release
-      - mcp__github__get_me
-      - mcp__github__get_release_by_tag
-      - mcp__github__get_tag
-      - mcp__github__get_team_members
-      - mcp__github__get_teams
-      - mcp__github__issue_read
-      - mcp__github__issue_write
-      - mcp__github__list_branches
-      - mcp__github__list_commits
-      - mcp__github__list_issue_fields
-      - mcp__github__list_issue_types
-      - mcp__github__list_issues
-      - mcp__github__list_pull_requests
-      - mcp__github__list_releases
-      - mcp__github__list_repository_collaborators
-      - mcp__github__list_tags
-      - mcp__github__merge_pull_request
-      - mcp__github__pull_request_read
-      - mcp__github__pull_request_review_write
-      - mcp__github__push_files
-      - mcp__github__request_copilot_review
-      - mcp__github__run_secret_scanning
-      - mcp__github__search_code
-      - mcp__github__search_commits
-      - mcp__github__search_issues
-      - mcp__github__search_pull_requests
-      - mcp__github__search_repositories
-      - mcp__github__search_users
-      - mcp__github__sub_issue_write
-      - mcp__github__update_pull_request
-      - mcp__github__update_pull_request_branch

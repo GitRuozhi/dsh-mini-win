@@ -1,42 +1,47 @@
-// block-github.mjs — preset-local composition row that masks inherited global
+// block-github.mjs — preset-local composition row that masks inherited GitHub
 // tools for the scope it mounts under (see agent.cordis.yml).
 //
-// The HOST composition registers global tools (the web profile's dsh-github-mcp
-// rows register `mcp__github__*` and `github_file_read` into the root `tools`
-// registry), and every agent inherits them. A preset that must not expose some
-// of those tools cannot unregister a host row — it can only mask the inherited
-// names for its own scope, which is exactly what `tools.restrict({ deny })`
-// does. Restrictions are per-scope: other presets and host readers are
-// unaffected.
+// The HOST composition may register `mcp__github__*` and `github_file_read`
+// into the root `tools` registry, and every agent inherits them. A preset
+// cannot unregister a host row — it can only mask the inherited names for
+// its own scope via `tools.restrict({ deny })`, and refuse execution via
+// `tools.guard`.
 //
-// Timing: `restrict()` rejects names that are not currently registered, and the
-// github MCP bridge syncs its tool list asynchronously after host start. This
-// row therefore retries on every `tools/change` until the whole deny list is
-// known, then applies the restriction once. Once applied it stays applied for
-// the lifetime of the mounting scope (the preset's standing mount), and the
-// `applied` flag prevents the restriction's own change notification from
-// re-entering.
+// The GitHub MCP bridge syncs its tool list asynchronously after host start.
+// This row therefore:
+//   1. guards every GitHub tool name immediately (execution cannot leak);
+//   2. retries `restrict()` on every `tools/change` so newly discovered MCP
+//      tools disappear from the model-facing catalog as they appear.
 //
-// Row config: `{ deny: string[] }` — exact inherited tool names to hide.
+// No-op when dsh-github-mcp is not installed.
 
 const name = 'block-github';
 const inject = ['tools'];
 
-function apply(ctx, config) {
-  const cfg = config ?? {};
-  const wanted = [...new Set(Array.isArray(cfg.deny) ? cfg.deny : [])];
-  if (wanted.length === 0) return;
+function isGithubTool(toolName) {
+  return toolName === 'github_file_read' || toolName.startsWith('mcp__github__');
+}
 
-  let applied = false;
+function apply(ctx) {
+  ctx.tools.guard((exec) => {
+    const toolName = typeof exec?.name === 'string' ? exec.name : '';
+    if (isGithubTool(toolName)) return 'GitHub tools are disabled in the mini-win preset';
+  });
+
+  const denied = new Set();
   const sync = () => {
-    if (applied) return;
+    const fresh = [];
+    for (const schema of ctx.tools.schemas()) {
+      const toolName = schema?.name;
+      if (typeof toolName !== 'string' || denied.has(toolName)) continue;
+      if (isGithubTool(toolName)) fresh.push(toolName);
+    }
+    if (fresh.length === 0) return;
     try {
-      // The disposer is owned by the fiber; it unwinds with the mounting scope.
-      ctx.tools.restrict({ deny: wanted });
-      applied = true;
-    } catch (error) {
-      // Some names are not registered yet (async MCP sync) — retry on the next
-      // tools/change. Once every name exists the call succeeds.
+      ctx.tools.restrict({ deny: fresh });
+      for (const toolName of fresh) denied.add(toolName);
+    } catch {
+      // Names are not in the restrictable global set yet (async MCP sync).
     }
   };
 
